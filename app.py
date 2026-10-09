@@ -1,233 +1,299 @@
 
+from __future__ import annotations
+
 import io
-import os
 import pickle
 from datetime import date, timedelta
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 import matplotlib.pyplot as plt
-from PIL import Image
 
-# ==========================================================
+from PIL import Image
+from sklearn.preprocessing import StandardScaler
+
+
+# ============================================================
 # ORBITAL — EARTH OBSERVATORY
-# ==========================================================
+# ============================================================
 
 st.set_page_config(
     page_title="ORBITAL | Earth Observatory",
-    page_icon="🌍",
+    page_icon="🛰️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-NASA_WMS = (
-    "https://gibs.earthdata.nasa.gov/"
-    "wms/epsg4326/best/wms.cgi"
+BASE_DIR = Path(__file__).resolve().parent
+NASA_WMS = "https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi"
+WORLDVIEW_URL = "https://worldview.earthdata.nasa.gov/"
+EUROSAT_URL = "https://huggingface.co/datasets/blanchon/EuroSAT_MSI"
+
+NASA_PRODUCTS = {
+    "Suomi NPP VIIRS · True colour":
+        "VIIRS_SNPP_CorrectedReflectance_TrueColor",
+    "Terra MODIS · True colour":
+        "MODIS_Terra_CorrectedReflectance_TrueColor",
+}
+
+
+# ============================================================
+# STYLE
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'Space Grotesk', sans-serif;
+    }
+
+    .stApp {
+        background:
+            radial-gradient(ellipse at 10% 0%, #132c3b 0%, transparent 40%),
+            linear-gradient(180deg, #08121b 0%, #0b1119 100%);
+        color: #eaf2f6;
+    }
+
+    [data-testid="stSidebar"] {
+        background: #0c1721;
+        border-right: 1px solid #203442;
+    }
+
+    h1, h2, h3 {
+        color: #eff8ff !important;
+        letter-spacing: -0.035em;
+    }
+
+    .eyebrow {
+        color: #7eddd0;
+        font-family: 'DM Mono', monospace;
+        font-size: 0.75rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+    }
+
+    .hero {
+        padding: 2.1rem 0 1.3rem 0;
+        border-bottom: 1px solid #233946;
+        margin-bottom: 2rem;
+    }
+
+    .hero h1 {
+        font-size: clamp(2.4rem, 6vw, 4.7rem);
+        line-height: 1;
+        margin: 0.5rem 0 1rem 0;
+    }
+
+    .hero p {
+        color: #a9bac5;
+        max-width: 780px;
+        font-size: 1.08rem;
+    }
+
+    .module {
+        font-family: 'DM Mono', monospace;
+        color: #79d9cd;
+        font-size: 0.72rem;
+        letter-spacing: 0.11em;
+        margin-bottom: 0.35rem;
+    }
+
+    .muted {
+        color: #a9bac5;
+    }
+
+    .panel {
+        background: #101e29;
+        border: 1px solid #243b49;
+        border-radius: 12px;
+        padding: 1rem 1.2rem;
+        margin: 0.4rem 0 1rem 0;
+    }
+
+    div[data-testid="stMetric"] {
+        background: #101e29;
+        border: 1px solid #243b49;
+        border-radius: 10px;
+        padding: 0.8rem;
+    }
+
+    div[data-testid="stMetricValue"] {
+        color: #8be0d2;
+    }
+
+    .stButton button, .stLinkButton a {
+        border-radius: 8px;
+    }
+
+    hr {
+        border-color: #233946;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
-# ----------------------------- DESIGN -----------------------------
 
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap');
+# ============================================================
+# HELPERS
+# ============================================================
 
-html, body, [class*="css"] {
-    font-family: 'Manrope', sans-serif;
-}
-
-.stApp {
-    background: radial-gradient(ellipse at 70% 0%, #17384b 0%, #08121e 48%);
-    color: #edf5fb;
-}
-
-[data-testid="stSidebar"] {
-    background: #0b1724;
-    border-right: 1px solid #263b4c;
-}
-
-.block-container {
-    max-width: 1450px;
-    padding-top: 1.5rem;
-    padding-bottom: 3rem;
-}
-
-.eyebrow {
-    font-family: 'DM Mono', monospace;
-    color: #71dfc9;
-    font-size: 11px;
-    letter-spacing: .15em;
-    text-transform: uppercase;
-}
-
-.hero {
-    padding: 32px;
-    border-radius: 20px;
-    background: linear-gradient(115deg, #112a3d, #102130 60%, #12404a);
-    border: 1px solid #315367;
-    margin-bottom: 24px;
-}
-
-.hero h1 {
-    font-size: clamp(34px, 4vw, 54px);
-    letter-spacing: -.055em;
-    line-height: 1.08;
-    margin: 10px 0;
-}
-
-.hero p {
-    color: #c0d2df;
-    max-width: 850px;
-    line-height: 1.8;
-}
-
-.section {
-    margin-top: 34px;
-    margin-bottom: 18px;
-    border-bottom: 1px solid #294052;
-    padding-bottom: 12px;
-}
-
-.section h2 {
-    margin: 5px 0;
-    font-size: 26px;
-    letter-spacing: -.04em;
-}
-
-.panel {
-    background: #0d1b29;
-    border: 1px solid #263c4e;
-    padding: 18px;
-    border-radius: 15px;
-    margin-bottom: 12px;
-}
-
-.muted {
-    color: #a9bdcc;
-    font-size: 13px;
-    line-height: 1.7;
-}
-
-div[data-testid="stMetric"] {
-    background: #0d1b29;
-    border: 1px solid #263c4e;
-    padding: 14px;
-    border-radius: 13px;
-}
-
-.stButton button {
-    border-radius: 9px;
-    font-weight: 700;
-    min-height: 42px;
-}
-
-a {
-    color: #71dfc9 !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
-
-def section(number, title, subtitle):
-    st.markdown(
-        f"""
-        <div class="section">
-            <div class="eyebrow">{number} / OBSERVATORY MODULE</div>
-            <h2>{title}</h2>
-            <div class="muted">{subtitle}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def encode_image(image):
-    """Convert a PIL image into downloadable JPEG bytes."""
-    buffer = io.BytesIO()
-    image.save(buffer, format="JPEG", quality=92)
-    return buffer.getvalue()
+def first_existing_path(paths):
+    for path in paths:
+        if path.exists():
+            return path
+    return None
 
 
 def load_model_artifact():
-    path = "orbital_models.pkl"
+    """Load the saved model bundle without stopping the whole app."""
+    artifact_path = first_existing_path(
+        [
+            BASE_DIR / "orbital_models.pkl",
+            BASE_DIR / "orbital_models" / "orbital_models.pkl",
+            BASE_DIR / "orbital_models" / "orbital_models.pickle",
+        ]
+    )
 
-    if not os.path.exists(path):
-        return None, f"{path} was not found beside app.py."
+    if artifact_path is None:
+        return None, (
+            "Model artifact not found. Expected orbital_models.pkl "
+            "in the repository root or orbital_models/ directory."
+        )
 
     try:
-        with open(path, "rb") as file:
-            bundle = pickle.load(file)
+        with artifact_path.open("rb") as file:
+            artifact = pickle.load(file)
 
-        if not isinstance(bundle, dict):
-            return None, "The model artifact is not a dictionary."
+        if not isinstance(artifact, dict):
+            return None, "The model artifact loaded, but it is not a dictionary."
 
-        return bundle, None
+        return artifact, f"Loaded {artifact_path.name}"
 
     except Exception as exc:
         return None, f"{type(exc).__name__}: {exc}"
 
 
-def get_field(bundle, names, default=None):
-    if not isinstance(bundle, dict):
+def get_field(artifact, names, default=None):
+    if not isinstance(artifact, dict):
         return default
 
     for name in names:
-        if name in bundle:
-            return bundle[name]
+        if name in artifact:
+            return artifact[name]
 
     return default
 
 
-# ----------------------------- NASA IMAGERY -----------------------------
+def encode_image(image):
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=92)
+    return buffer.getvalue()
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_nasa_image(layer, selected_date):
-    """Fetch a global NASA GIBS map image."""
-    params = {
-        "SERVICE": "WMS",
-        "REQUEST": "GetMap",
-        "VERSION": "1.1.1",
-        "LAYERS": layer,
-        "STYLES": "",
-        "SRS": "EPSG:4326",
-        "BBOX": "-180,-90,180,90",
-        "WIDTH": "1600",
-        "HEIGHT": "800",
-        "FORMAT": "image/jpeg",
-        "TIME": selected_date,
-    }
 
-    response = requests.get(
-        NASA_WMS,
-        params=params,
-        timeout=45,
-        headers={"User-Agent": "ORBITAL-Earth-Observatory/1.0"},
-    )
+def validate_image_response(response):
+    """Reject error pages and invalid image payloads."""
     response.raise_for_status()
 
-    content_type = response.headers.get("content-type", "")
-
-    if "image" not in content_type.lower():
+    content_type = response.headers.get("Content-Type", "").lower()
+    if not content_type.startswith("image/"):
         raise RuntimeError(
-            "NASA GIBS did not return an image. "
-            "The selected layer or date may be unavailable."
+            "The server response was not an image "
+            f"(Content-Type: {content_type or 'missing'})."
         )
 
-    try:
-        return Image.open(io.BytesIO(response.content)).convert("RGB")
-    except Exception as exc:
-        raise RuntimeError(
-            "The server response could not be decoded as an image."
-        ) from exc
+    with Image.open(io.BytesIO(response.content)) as check:
+        check.verify()
 
+    with Image.open(io.BytesIO(response.content)) as loaded:
+        image = loaded.convert("RGB")
 
-# ----------------------------- EUROSAT DATA -----------------------------
+    if image.width < 100 or image.height < 100:
+        raise RuntimeError("The returned image is unexpectedly small.")
+
+    return image
+
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def fetch_nasa_image(requested_layer, selected_date):
+    """
+    Try the requested GIBS product and then alternate products/dates.
+    Returns: image, actual layer, actual date, fallback_used.
+    """
+    requested_date = date.fromisoformat(str(selected_date))
+
+    other_layer = (
+        "MODIS_Terra_CorrectedReflectance_TrueColor"
+        if requested_layer == "VIIRS_SNPP_CorrectedReflectance_TrueColor"
+        else "VIIRS_SNPP_CorrectedReflectance_TrueColor"
+    )
+
+    attempts = [
+        (requested_layer, requested_date),
+        (other_layer, requested_date),
+        (requested_layer, requested_date - timedelta(days=1)),
+        (other_layer, requested_date - timedelta(days=1)),
+        (requested_layer, requested_date - timedelta(days=2)),
+        (other_layer, requested_date - timedelta(days=2)),
+    ]
+
+    errors = []
+
+    for layer, image_date in attempts:
+        params = {
+            "SERVICE": "WMS",
+            "REQUEST": "GetMap",
+            "VERSION": "1.1.1",
+            "LAYERS": layer,
+            "STYLES": "",
+            "SRS": "EPSG:4326",
+            "BBOX": "-180,-90,180,90",
+            "WIDTH": "1600",
+            "HEIGHT": "800",
+            "FORMAT": "image/jpeg",
+            "TIME": image_date.isoformat(),
+        }
+
+        try:
+            response = requests.get(
+                NASA_WMS,
+                params=params,
+                timeout=(8, 30),
+                headers={
+                    "User-Agent": "ORBITAL-Earth-Observatory/1.1"
+                },
+            )
+
+            image = validate_image_response(response)
+
+            fallback_used = (
+                layer != requested_layer
+                or image_date != requested_date
+            )
+
+            return image, layer, image_date.isoformat(), fallback_used
+
+        except Exception as exc:
+            errors.append(
+                f"{layer} / {image_date.isoformat()}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    raise RuntimeError(
+        "NASA GIBS requests failed for all attempted products and dates.\n\n"
+        + "\n".join(errors)
+    )
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
 def load_eurosat_samples(limit=20):
-    """Load sample images from EuroSAT MSI."""
+    """Load a small sample of EuroSAT MSI using streaming."""
     from datasets import load_dataset
 
     dataset = load_dataset(
@@ -237,615 +303,727 @@ def load_eurosat_samples(limit=20):
     )
 
     samples = []
-
-    for i, row in enumerate(dataset):
-        image = row.get("image")
-
-        if image is None:
-            continue
-
-        samples.append({
-            "id": i,
-            "image": np.asarray(image),
-            "label": str(row.get("label", "Unknown")),
-            "filename": str(row.get("filename", f"sample_{i}")),
-        })
-
+    for sample in dataset:
+        samples.append(sample)
         if len(samples) >= limit:
             break
 
     return samples
 
 
-def image_hwc(image):
-    """Normalize image layout to height × width × channels."""
-    arr = np.asarray(image)
+def image_hwc(value):
+    """Convert a multispectral sample to H × W × bands."""
+    if isinstance(value, Image.Image):
+        array = np.asarray(value)
+    elif isinstance(value, dict):
+        if "array" in value:
+            array = np.asarray(value["array"])
+        elif "path" in value and value["path"]:
+            array = np.asarray(Image.open(value["path"]))
+        else:
+            raise ValueError("Unrecognized image dictionary.")
+    else:
+        array = np.asarray(value)
 
-    if arr.ndim == 2:
-        return arr.astype(np.float32)
-
-    if arr.ndim != 3:
-        raise ValueError(f"Unexpected image dimensions: {arr.shape}")
-
-    # Convert channel-first arrays such as (13, 64, 64).
-    if arr.shape[0] in (3, 4, 13) and arr.shape[-1] not in (3, 4, 13):
-        arr = np.moveaxis(arr, 0, -1)
-
-    return arr.astype(np.float32)
-
-
-def stretch(band):
-    """Percentile contrast stretch for visualization."""
-    band = np.asarray(band, dtype=float)
-    low, high = np.nanpercentile(band, [2, 98])
-
-    if not np.isfinite(low) or not np.isfinite(high) or high <= low:
-        return np.zeros_like(band)
-
-    return np.clip((band - low) / (high - low), 0, 1)
-
-
-def make_composite(image, mode):
-    arr = image_hwc(image)
-
-    if arr.ndim != 3 or arr.shape[-1] < 12:
+    if array.ndim != 3:
         raise ValueError(
-            "Expected an image containing the required multispectral bands."
+            f"Expected a 3-D multispectral array; got shape {array.shape}."
         )
 
-    if mode == "Natural-colour approximation":
-        bands = [2, 1, 0]
-    elif mode == "Vegetation false colour":
-        bands = [7, 3, 2]
+    # EuroSAT arrays may use either HWC or CHW.
+    if array.shape[-1] <= 20:
+        result = array
+    elif array.shape[0] <= 20:
+        result = np.moveaxis(array, 0, -1)
     else:
-        bands = [11, 7, 3]
+        raise ValueError(
+            f"Could not identify spectral-band axis in {array.shape}."
+        )
 
-    return np.stack(
-        [stretch(arr[:, :, band]) for band in bands],
-        axis=-1,
-    )
+    return result.astype(np.float32)
 
 
-def calculate_indices(image):
-    arr = image_hwc(image)
+def stretch(array):
+    """Percentile stretch for display, independent of source data range."""
+    array = np.asarray(array, dtype=np.float32)
+    result = np.zeros_like(array, dtype=np.float32)
 
-    if arr.ndim != 3 or arr.shape[-1] < 12:
-        raise ValueError("The selected image does not contain enough bands.")
+    if array.ndim == 2:
+        low, high = np.nanpercentile(array, [2, 98])
+        if high <= low:
+            return result
+        return np.clip((array - low) / (high - low), 0, 1)
 
-    green = arr[:, :, 2]
-    red = arr[:, :, 3]
-    nir = arr[:, :, 7]
-    swir = arr[:, :, 11]
+    for channel in range(array.shape[-1]):
+        plane = array[..., channel]
+        low, high = np.nanpercentile(plane, [2, 98])
+        if high > low:
+            result[..., channel] = np.clip(
+                (plane - low) / (high - low), 0, 1
+            )
+
+    return result
+
+
+def make_composite(cube, band_indices):
+    available = cube.shape[-1]
+    if max(band_indices) >= available:
+        raise ValueError(
+            f"This sample has {available} bands, but the composite "
+            f"requires band index {max(band_indices)}."
+        )
+
+    selected = cube[..., list(band_indices)]
+    return stretch(selected)
+
+
+def calculate_indices(cube):
+    """
+    Band indices assume EuroSAT MSI band ordering used in this project:
+    green=2, red=3, NIR=7, SWIR=11.
+    """
+    if cube.shape[-1] <= 11:
+        raise ValueError(
+            "At least 12 bands are needed to calculate these indices."
+        )
+
+    green = cube[..., 2]
+    red = cube[..., 3]
+    nir = cube[..., 7]
+    swir = cube[..., 11]
     eps = 1e-8
 
+    ndvi = (nir - red) / (nir + red + eps)
+    ndwi = (green - nir) / (green + nir + eps)
+    ndbi = (swir - nir) / (swir + nir + eps)
+
     return {
-        "NDVI": (nir - red) / (nir + red + eps),
-        "NDWI": (green - nir) / (green + nir + eps),
-        "NDBI": (swir - nir) / (swir + nir + eps),
+        "NDVI": np.clip(ndvi, -1, 1),
+        "NDWI": np.clip(ndwi, -1, 1),
+        "NDBI": np.clip(ndbi, -1, 1),
     }
 
 
-def calculate_features(image):
-    arr = image_hwc(image)
-    indices = calculate_indices(image)
+def calculate_features(cube):
+    """13 band means + mean and standard deviation of 3 indices."""
+    indices = calculate_indices(cube)
+    features = [float(np.nanmean(cube[..., band]))
+                for band in range(cube.shape[-1])]
 
-    band_means = np.nanmean(arr, axis=(0, 1))[:13].tolist()
+    for name in ("NDVI", "NDWI", "NDBI"):
+        index = indices[name]
+        features.extend(
+            [
+                float(np.nanmean(index)),
+                float(np.nanstd(index)),
+            ]
+        )
 
-    index_features = []
-    for name in ["NDVI", "NDWI", "NDBI"]:
-        values = indices[name]
-        index_features.extend([
-            float(np.nanmean(values)),
-            float(np.nanstd(values)),
-        ])
-
-    return np.asarray(band_means + index_features)
+    return np.asarray(features, dtype=np.float32)
 
 
-# ----------------------------- MODEL -----------------------------
+def find_image(sample):
+    for key in ("image", "img", "pixel_values"):
+        if key in sample:
+            return sample[key], key
+    raise KeyError(
+        "Could not find an image field. Available fields: "
+        + ", ".join(sample.keys())
+    )
 
-bundle, model_error = load_model_artifact()
+
+def make_index_figure(index_name, array):
+    fig, ax = plt.subplots(figsize=(5, 4))
+    im = ax.imshow(array, cmap="RdYlGn", vmin=-1, vmax=1)
+    ax.set_title(index_name)
+    ax.set_axis_off()
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.tight_layout()
+    return fig
+
+
+def display_feature_table(features):
+    table = pd.DataFrame(
+        {
+            "Feature": [
+                *[f"Band {i + 1} mean" for i in range(13)],
+                "NDVI mean", "NDVI std",
+                "NDWI mean", "NDWI std",
+                "NDBI mean", "NDBI std",
+            ],
+            "Value": features,
+        }
+    )
+    st.dataframe(table, use_container_width=True, hide_index=True)
+
+
+# ============================================================
+# LOAD ARTIFACT
+# ============================================================
+
+artifact, artifact_status = load_model_artifact()
 
 q_learning = get_field(
-    bundle, ["q_learning", "Q_v2", "Q", "q_table"], {}
+    artifact,
+    ["Q_v2", "Q_learning", "q_learning", "q_table"],
+    {},
 )
+
 sarsa = get_field(
-    bundle, ["sarsa", "Q_sarsa", "SARSA", "sarsa_table"], {}
+    artifact,
+    ["Q_sarsa", "SARSA", "sarsa", "sarsa_table"],
+    {},
 )
-scaler = get_field(bundle, ["scaler"])
-region_model = get_field(bundle, ["region_model"])
-target_features = get_field(bundle, ["target_features"])
-distance_matrix = get_field(bundle, ["distance_matrix"])
+
+scaler = get_field(
+    artifact,
+    ["scaler", "feature_scaler"],
+)
+
+region_model = get_field(
+    artifact,
+    ["region_model", "kmeans", "cluster_model"],
+)
+
+target_features = get_field(
+    artifact,
+    ["target_features", "features", "X_features"],
+)
+
+distance_matrix = get_field(
+    artifact,
+    ["distance_matrix", "distances"],
+)
 
 
-# ==========================================================
+# ============================================================
 # SIDEBAR
-# ==========================================================
+# ============================================================
 
 with st.sidebar:
-    st.markdown(
-        '<div class="eyebrow">ORBITAL / EARTH LAB</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown('<div class="eyebrow">ORBITAL / EARTH LAB</div>',
+                unsafe_allow_html=True)
     st.title("Observation settings")
 
     st.markdown("#### NASA imagery")
 
-    layer_options = {
-        "Terra MODIS · True colour":
-            "MODIS_Terra_CorrectedReflectance_TrueColor",
-        "Suomi NPP VIIRS · True colour":
-            "VIIRS_SNPP_CorrectedReflectance_TrueColor",
-    }
+    max_date = date.today() - timedelta(days=1)
+    min_date = date(2002, 1, 1)
+    default_date = min(date(2026, 10, 6), max_date)
+
+    selected_date = st.date_input(
+        "Requested observation date",
+        value=default_date,
+        min_value=min_date,
+        max_value=max_date,
+        help="Imagery availability varies by product and date.",
+    )
 
     layer_label = st.selectbox(
         "Satellite product",
-        list(layer_options.keys()),
+        options=list(NASA_PRODUCTS.keys()),
+        index=0,
     )
-    nasa_layer = layer_options[layer_label]
-
-    selected_date = st.date_input(
-        "Imagery date",
-        value=date.today() - timedelta(days=3),
-        min_value=date(2002, 1, 1),
-        max_value=date.today() - timedelta(days=1),
-    )
+    nasa_layer = NASA_PRODUCTS[layer_label]
 
     st.caption(
-        "Some imagery products may not be available for every date."
+        "If a product/date fails, ORBITAL tries another supported "
+        "product and nearby dates."
     )
 
     st.divider()
     st.markdown("#### Research artifact")
 
-    if bundle is not None:
+    if artifact is not None:
         st.success("Model artifact loaded")
-        st.metric("Q-learning states", len(q_learning or {}))
-        st.metric("SARSA states", len(sarsa or {}))
     else:
         st.warning("Model artifact unavailable")
-        st.caption(model_error)
+
+    st.caption(artifact_status)
+
+    st.metric("Q-learning states", len(q_learning or {}))
+    st.metric("SARSA states", len(sarsa or {}))
 
     st.divider()
-    st.markdown("[NASA Worldview](https://worldview.earthdata.nasa.gov/)")
-    st.markdown("[NASA GIBS documentation](https://nasa-gibs.github.io/gibs-api-docs/)")
-    st.markdown("[EuroSAT MSI dataset](https://huggingface.co/datasets/blanchon/EuroSAT_MSI)")
+    st.markdown(f"[NASA Worldview]({WORLDVIEW_URL})")
+    st.markdown(
+        "[NASA GIBS documentation]"
+        "(https://nasa-gibs.github.io/gibs-api-docs/)"
+    )
+    st.markdown(f"[EuroSAT MSI dataset]({EUROSAT_URL})")
 
 
-# ==========================================================
-# HEADER
-# ==========================================================
+# ============================================================
+# HERO
+# ============================================================
 
-st.markdown("""
-<div class="hero">
-    <div class="eyebrow">EARTH OBSERVATION · REMOTE SENSING · AI</div>
-    <h1>ORBITAL Earth Observatory</h1>
-    <p>
-        Explore satellite imagery, reveal spectral patterns across Earth's
-        surface, and investigate reinforcement learning for information-efficient
-        Earth observation.
-    </p>
-    <div class="eyebrow">
-        NASA IMAGERY &nbsp; / &nbsp; MULTISPECTRAL ANALYSIS &nbsp; / &nbsp; RL RESEARCH
+st.markdown(
+    """
+    <div class="hero">
+        <div class="eyebrow">Earth observation · Remote sensing · AI</div>
+        <h1>ORBITAL Earth Observatory</h1>
+        <p>
+            Explore satellite imagery, reveal spectral patterns across
+            Earth's surface, and investigate reinforcement learning for
+            information-efficient Earth observation.
+        </p>
+        <div class="eyebrow">
+            NASA imagery &nbsp; / &nbsp; Multispectral analysis
+            &nbsp; / &nbsp; RL research
+        </div>
     </div>
-</div>
-""", unsafe_allow_html=True)
-
-
-# ==========================================================
-# 01 — EARTH IMAGERY
-# ==========================================================
-
-section(
-    "01",
-    "Earth from orbit",
-    "Explore NASA satellite imagery before entering the multispectral lab.",
+    """,
+    unsafe_allow_html=True,
 )
 
-image_tab, worldview_tab = st.tabs([
-    "Satellite image",
-    "Interactive NASA Worldview",
-])
+
+# ============================================================
+# 01 — EARTH FROM ORBIT
+# ============================================================
+
+st.markdown(
+    '<div class="module">01 / OBSERVATORY MODULE</div>',
+    unsafe_allow_html=True,
+)
+st.header("Earth from orbit")
+st.write(
+    "Explore NASA satellite imagery before entering the multispectral lab."
+)
+
+image_tab, worldview_tab = st.tabs(
+    ["Satellite image", "Interactive NASA Worldview"]
+)
 
 with image_tab:
     st.markdown(
-        f"**Product:** `{layer_label}`  ·  "
+        f"**Requested product:** `{layer_label}` · "
         f"**Requested date:** `{selected_date.isoformat()}`"
     )
 
-    if st.button("Load satellite imagery", type="primary"):
-        st.session_state["load_nasa_image"] = True
-
-    if (
-        st.session_state.get("load_nasa_image", False)
-        or "nasa_image_bytes" in st.session_state
-    ):
-        with st.spinner("Requesting satellite imagery from NASA GIBS…"):
-            try:
-                image = fetch_nasa_image(
+    try:
+        with st.spinner("Connecting to NASA GIBS and loading imagery…"):
+            nasa_image, actual_layer, actual_date, used_fallback = (
+                fetch_nasa_image(
                     nasa_layer,
                     selected_date.isoformat(),
                 )
-
-                st.session_state["nasa_image_bytes"] = encode_image(image)
-                st.session_state["nasa_image_key"] = (
-                    nasa_layer,
-                    selected_date.isoformat(),
-                )
-
-            except Exception as exc:
-                st.error(
-                    "NASA imagery could not be loaded for this product/date. "
-                    "Try a different date or open the interactive Worldview tab."
-                )
-                with st.expander("Technical details"):
-                    st.code(f"{type(exc).__name__}: {exc}")
-
-    current_key = (nasa_layer, selected_date.isoformat())
-    stored_key = st.session_state.get("nasa_image_key")
-
-    if (
-        st.session_state.get("nasa_image_bytes")
-        and stored_key == current_key
-    ):
-        image_bytes = st.session_state["nasa_image_bytes"]
+            )
 
         st.image(
-            image_bytes,
+            nasa_image,
             caption=(
-                f"NASA GIBS visualization · {layer_label} · "
-                f"{selected_date.isoformat()}"
+                f"NASA GIBS visualization · {actual_layer} · {actual_date}"
             ),
             use_container_width=True,
         )
 
         st.download_button(
-            "Download displayed NASA image",
-            data=image_bytes,
-            file_name=f"orbital_nasa_{selected_date.isoformat()}.jpg",
+            "Download satellite image",
+            data=encode_image(nasa_image),
+            file_name=f"orbital_nasa_{actual_date}.jpg",
             mime="image/jpeg",
         )
 
-    st.markdown("""
-    <div class="muted">
-        This is a global satellite visualization, not street-level imagery.
-        Cloud cover, resolution, lighting, and acquisition time influence
-        what is visible.
-    </div>
-    """, unsafe_allow_html=True)
+        if used_fallback:
+            st.info(
+                f"The requested product/date was unavailable. "
+                f"Showing the successful fallback: {actual_layer}, "
+                f"{actual_date}."
+            )
+
+        st.caption(
+            "This is a global satellite visualization, not street-level "
+            "imagery. Cloud cover, resolution, lighting, and acquisition "
+            "time influence what is visible."
+        )
+
+    except Exception as exc:
+        st.error(
+            "NASA imagery could not be loaded after the fallback attempts. "
+            "This may be a temporary NASA service, network, or date/product "
+            "availability issue."
+        )
+
+        with st.expander("NASA connection details"):
+            st.code(f"{type(exc).__name__}: {exc}")
+
+        st.link_button(
+            "Open NASA Worldview",
+            WORLDVIEW_URL,
+        )
+
+        st.info(
+            "The rest of ORBITAL can still work even when the NASA "
+            "image service is unavailable."
+        )
 
 with worldview_tab:
     st.markdown(
-        "Pan, zoom, change dates, and explore NASA's interactive Earth-observation layers."
-    )
-
-    components.iframe(
-        "https://worldview.earthdata.nasa.gov/",
-        height=700,
-        scrolling=True,
-    )
-
-    st.caption(
-        "The embedded viewer is operated by NASA. If the embed is blocked "
-        "by your browser or deployment, open NASA Worldview directly."
+        "Use NASA Worldview for interactive browsing, date changes, "
+        "and available imagery layers."
     )
 
     st.link_button(
-        "Open NASA Worldview",
-        "https://worldview.earthdata.nasa.gov/",
+        "Open NASA Worldview in a new tab",
+        WORLDVIEW_URL,
+    )
+
+    st.components.v1.iframe(
+        WORLDVIEW_URL,
+        height=680,
+        scrolling=True,
     )
 
 
-# ==========================================================
-# 02 — MULTISPECTRAL LAB
-# ==========================================================
+# ============================================================
+# 02 — MULTISPECTRAL ANALYSIS LAB
+# ============================================================
 
-section(
-    "02",
-    "Multispectral analysis lab",
-    "Compare EuroSAT MSI band composites and explore vegetation, water, and built-up indices.",
+st.divider()
+st.markdown(
+    '<div class="module">02 / OBSERVATORY MODULE</div>',
+    unsafe_allow_html=True,
+)
+st.header("Multispectral analysis lab")
+st.write(
+    "Compare EuroSAT MSI band composites and explore vegetation, "
+    "water, and built-up indices."
 )
 
-st.markdown("""
-<div class="panel">
-    <b>What remote sensing reveals</b>
-    <div class="muted">
+st.markdown(
+    """
+    <div class="panel">
+        <strong>What remote sensing reveals</strong><br><br>
         Satellites measure reflected energy at different wavelengths.
         False-colour composites make spectral differences easier to see,
-        while indices such as NDVI, NDWI, and NDBI summarize selected band
-        relationships. They are useful indicators, not definitive classifications.
+        while NDVI, NDWI, and NDBI summarize selected band relationships.
+        These are useful indicators, not definitive classifications.
     </div>
-</div>
-""", unsafe_allow_html=True)
-
-samples = None
-dataset_error = None
+    """,
+    unsafe_allow_html=True,
+)
 
 try:
-    with st.spinner("Loading EuroSAT multispectral samples…"):
-        samples = load_eurosat_samples(20)
-except Exception as exc:
-    dataset_error = f"{type(exc).__name__}: {exc}"
+    with st.spinner("Loading EuroSAT MSI samples…"):
+        samples = load_eurosat_samples(limit=30)
 
-if samples:
-    sample_names = [
-        f"{sample['id']:03d} · {sample['filename']}"
-        for sample in samples
-    ]
+    if not samples:
+        raise RuntimeError("The dataset returned no samples.")
 
-    chosen = st.selectbox("Select a satellite sample", sample_names)
-    sample = samples[sample_names.index(chosen)]
+    sample_options = []
+    for index, sample in enumerate(samples):
+        name = sample.get("filename", sample.get("image_name", f"Sample {index + 1}"))
+        sample_options.append(f"{index + 1:02d} · {name}")
 
-    composite_mode = st.radio(
-        "Spectral composite",
+    selected_sample_index = st.selectbox(
+        "Choose a multispectral sample",
+        options=list(range(len(samples))),
+        format_func=lambda i: sample_options[i],
+    )
+
+    sample = samples[selected_sample_index]
+    image_value, image_key = find_image(sample)
+    cube = image_hwc(image_value)
+
+    if cube.shape[-1] < 12:
+        raise ValueError(
+            f"Selected image has only {cube.shape[-1]} bands; "
+            "this project expects at least 12."
+        )
+
+    composite_tab1, composite_tab2, composite_tab3 = st.tabs(
         [
             "Natural-colour approximation",
             "Vegetation false colour",
             "SWIR / NIR / Red",
-        ],
-        horizontal=True,
+        ]
     )
 
-    try:
-        image = sample["image"]
-        composite_image = make_composite(image, composite_mode)
-        indices = calculate_indices(image)
-        features = calculate_features(image)
+    with composite_tab1:
+        st.image(
+            make_composite(cube, (2, 1, 0)),
+            caption="Band combination: 3 / 2 / 1 (display approximation)",
+            use_container_width=True,
+        )
 
-        left, right = st.columns([1.15, 0.85], gap="large")
+    with composite_tab2:
+        st.image(
+            make_composite(cube, (7, 3, 2)),
+            caption="Band combination: 8 / 4 / 3 (false colour)",
+            use_container_width=True,
+        )
 
-        with left:
-            st.image(
-                composite_image,
-                caption=f"{sample['filename']} · {composite_mode}",
+    with composite_tab3:
+        st.image(
+            make_composite(cube, (11, 7, 3)),
+            caption="Band combination: 12 / 8 / 4 (SWIR / NIR / Red)",
+            use_container_width=True,
+        )
+
+    st.caption(
+        "The selected band combinations follow this project's assumed "
+        "EuroSAT MSI band ordering. Colours are stretched for visualization; "
+        "they are not raw sensor display values."
+    )
+
+    indices = calculate_indices(cube)
+    features = calculate_features(cube)
+
+    st.markdown("#### Spectral measurements")
+
+    metric_cols = st.columns(3)
+    for column, name in zip(metric_cols, ["NDVI", "NDWI", "NDBI"]):
+        column.metric(name, f"{np.nanmean(indices[name]):.3f}")
+
+    label = sample.get("label", sample.get("labels", "Not supplied"))
+    st.caption(
+        f"Dataset label: {label}. This is dataset metadata, not a location "
+        "identified from the image."
+    )
+
+    st.markdown("#### Spectral index maps")
+
+    map_cols = st.columns(3)
+    for column, name in zip(map_cols, ["NDVI", "NDWI", "NDBI"]):
+        with column:
+            st.pyplot(
+                make_index_figure(name, indices[name]),
                 use_container_width=True,
             )
             st.caption(
-                "The colours are generated from selected spectral bands. "
-                "False-colour imagery does not represent human vision."
+                {
+                    "NDVI": "Vegetation-related spectral contrast",
+                    "NDWI": "Water-related spectral contrast",
+                    "NDBI": "Built-up-related spectral contrast",
+                }[name]
             )
 
-        with right:
-            st.markdown("#### Spectral measurements")
+    with st.expander("Inspect all extracted features"):
+        display_feature_table(features)
 
-            a, b, c = st.columns(3)
-            a.metric("Mean NDVI", f"{np.nanmean(indices['NDVI']):.3f}")
-            b.metric("Mean NDWI", f"{np.nanmean(indices['NDWI']):.3f}")
-            c.metric("Mean NDBI", f"{np.nanmean(indices['NDBI']):.3f}")
-
-            st.markdown(
-                f"<div class='muted'>Dataset label: <b>{sample['label']}</b>"
-                "<br>The label is metadata from the dataset, not a location "
-                "identified from the image.</div>",
-                unsafe_allow_html=True,
-            )
-
-        st.markdown("#### Spectral index maps")
-
-        cols = st.columns(3)
-        palettes = {
-            "NDVI": "RdYlGn",
-            "NDWI": "BrBG",
-            "NDBI": "PuOr",
-        }
-
-        for col, name in zip(cols, ["NDVI", "NDWI", "NDBI"]):
-            with col:
-                fig, ax = plt.subplots(figsize=(5, 4))
-                plot = ax.imshow(
-                    indices[name],
-                    cmap=palettes[name],
-                    vmin=-1,
-                    vmax=1,
-                )
-                ax.set_title(name)
-                ax.axis("off")
-                fig.colorbar(plot, ax=ax, fraction=0.046, pad=0.04)
-                fig.tight_layout()
-                st.pyplot(fig, use_container_width=True)
-                plt.close(fig)
-
-        with st.expander("Inspect all 19 extracted features"):
-            names = (
-                [f"Band {i} mean" for i in range(1, 14)]
-                + [
-                    "NDVI mean", "NDVI std",
-                    "NDWI mean", "NDWI std",
-                    "NDBI mean", "NDBI std",
-                ]
-            )
-
-            feature_df = pd.DataFrame({
-                "Feature": names,
-                "Value": features,
-            })
-
-            st.dataframe(feature_df, use_container_width=True, hide_index=True)
-
-            st.download_button(
-                "Download spectral features",
-                feature_df.to_csv(index=False).encode("utf-8"),
-                file_name="orbital_spectral_features.csv",
-                mime="text/csv",
-            )
-
-    except Exception as exc:
-        st.error(f"Could not process the selected sample: {exc}")
-
-else:
-    st.warning(
-        "EuroSAT MSI samples could not be loaded. The NASA imagery viewer "
-        "is independent of this dataset."
+    st.download_button(
+        "Download extracted features as CSV",
+        data=pd.DataFrame(
+            [features],
+            columns=[
+                *[f"band_{i + 1}_mean" for i in range(cube.shape[-1])],
+                "ndvi_mean", "ndvi_std",
+                "ndwi_mean", "ndwi_std",
+                "ndbi_mean", "ndbi_std",
+            ],
+        ).to_csv(index=False).encode("utf-8"),
+        file_name="orbital_spectral_features.csv",
+        mime="text/csv",
     )
 
-    if dataset_error:
-        with st.expander("Dataset loading details"):
-            st.code(dataset_error)
-
-    st.markdown(
-        "Check that `datasets` appears in `requirements.txt`, then reboot "
-        "the Streamlit app after the dependency installation completes."
+except Exception as exc:
+    st.error("The EuroSAT multispectral lab could not load its sample.")
+    st.write(
+        "Check the dataset connection, dataset schema, and installed "
+        "`datasets` package. NASA imagery and the artifact status are "
+        "handled independently."
     )
+    with st.expander("Multispectral loading details"):
+        st.code(f"{type(exc).__name__}: {exc}")
+    st.link_button("Open EuroSAT MSI dataset", EUROSAT_URL)
 
 
-# ==========================================================
-# 03 — SPECTRAL CLUSTERS
-# ==========================================================
-
-section(
-    "03",
-    "Spectral target explorer",
-    "Explore the unsupervised feature groups saved by your research notebook.",
-)
-
-if bundle is not None:
-    centers = target_features
-    distances = distance_matrix
-
-    if centers is not None:
-        centers = np.asarray(centers)
-
-        if centers.ndim == 2 and len(centers) > 0:
-            target_id = st.selectbox(
-                "Choose a spectral target",
-                list(range(min(8, len(centers)))),
-            )
-
-            centroid = centers[target_id].reshape(1, -1)
-
-            try:
-                if (
-                    scaler is not None
-                    and centroid.shape[1] == scaler.n_features_in_
-                ):
-                    centroid = scaler.inverse_transform(centroid)
-            except Exception:
-                pass
-
-            if centroid.shape[1] >= 13:
-                fig, ax = plt.subplots(figsize=(10, 4))
-                ax.plot(
-                    range(1, 14),
-                    centroid.ravel()[:13],
-                    marker="o",
-                    linewidth=2,
-                )
-                ax.set_xlabel("Spectral band")
-                ax.set_ylabel("Centroid feature value")
-                ax.set_title(f"Spectral profile · Target {target_id}")
-                ax.grid(alpha=0.25)
-                fig.tight_layout()
-                st.pyplot(fig, use_container_width=True)
-                plt.close(fig)
-
-    if distances is not None:
-        distances = np.asarray(distances)
-
-        fig, ax = plt.subplots(figsize=(7, 5))
-        plot = ax.imshow(distances, cmap="magma")
-        ax.set_title("Pairwise spectral-target distances")
-        ax.set_xlabel("Target")
-        ax.set_ylabel("Target")
-        fig.colorbar(plot, ax=ax)
-        fig.tight_layout()
-        st.pyplot(fig, use_container_width=True)
-        plt.close(fig)
-
-    st.caption(
-        "These are spectral clusters in feature space, not geographic regions. "
-        "A cluster ID alone does not establish whether a location is forest, water, or city."
-    )
-
-else:
-    st.warning("The saved model artifact is unavailable. Check the app logs.")
-
-
-# ==========================================================
-# 04 — REINFORCEMENT LEARNING
-# ==========================================================
-
-section(
-    "04",
-    "Reinforcement-learning research",
-    "Inspect the saved agents and understand the observation-planning experiment.",
-)
-
-st.markdown("""
-<div class="panel">
-    <h3>What is the agent learning?</h3>
-    <div class="muted">
-        Under a limited observation budget, an agent must choose which spectral
-        target to observe. A novelty-aware reward can favor observations that
-        add information beyond what has already been seen.
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-if bundle is not None:
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown("#### Q-learning")
-        st.metric("Stored states", len(q_learning or {}))
-        st.caption("Off-policy temporal-difference learning.")
-
-    with col2:
-        st.markdown("#### SARSA")
-        st.metric("Stored states", len(sarsa or {}))
-        st.caption("On-policy temporal-difference learning.")
-
-    st.warning(
-        "The original OrbitalEnvV2 state encoding and action-selection logic "
-        "must be restored before this app can honestly report new missions "
-        "as evaluations of the trained Q-learning and SARSA agents. The model "
-        "tables load, but this dashboard does not fabricate learned-policy results."
-    )
-
-else:
-    st.warning("The model artifact could not be loaded.")
-
-
-# ==========================================================
-# 05 — METHODS AND SOURCES
-# ==========================================================
-
-section(
-    "05",
-    "Methods and data provenance",
-    "Distinguish the source imagery, the spectral experiment, and the RL model.",
-)
-
-with st.expander("Project methodology and limitations"):
-    st.markdown("""
-    **NASA imagery**
-    - Global satellite visualization is requested from NASA GIBS.
-    - NASA Worldview provides a separate interactive Earth-observation viewer.
-    - NASA imagery is not automatically fed into the EuroSAT-trained clustering model.
-
-    **EuroSAT MSI**
-    - Multispectral samples come from `blanchon/EuroSAT_MSI`.
-    - Features comprise 13 band means and six statistics from NDVI, NDWI, and NDBI.
-    - Index maps are spectral indicators and should not be treated as verified labels.
-
-    **Spectral clustering**
-    - The model's groups represent similarity in the stored feature space.
-    - Cluster IDs are arbitrary and do not encode geographic coordinates.
-
-    **Reinforcement learning**
-    - Saved Q-learning and SARSA tables are loaded from `orbital_models.pkl`.
-    - Faithful policy evaluation requires the exact training environment, state
-      representation, transition rules, and reward function.
-    - This prototype is not an operational satellite controller.
-
-    **Acknowledgement**
-    NASA GIBS imagery services are provided through NASA's Earth Science Data
-    and Information System.
-    """)
+# ============================================================
+# 03 — SPECTRAL TARGET EXPLORER
+# ============================================================
 
 st.divider()
+st.markdown(
+    '<div class="module">03 / OBSERVATORY MODULE</div>',
+    unsafe_allow_html=True,
+)
+st.header("Spectral target explorer")
+st.write(
+    "Inspect the unsupervised feature groups saved by your research notebook."
+)
 
-st.markdown("""
-<div style="text-align:center;color:#91a8b9;font-size:12px;padding:12px">
-    ORBITAL · EARTH OBSERVATORY · REMOTE-SENSING RESEARCH
-</div>
-""", unsafe_allow_html=True)
+if artifact is None:
+    st.warning(
+        "Load `orbital_models.pkl` to explore the saved spectral model."
+    )
+
+else:
+    if region_model is not None and hasattr(region_model, "cluster_centers_"):
+        centers = np.asarray(region_model.cluster_centers_)
+
+        st.markdown("#### Stored cluster centres")
+
+        fig, ax = plt.subplots(figsize=(12, 4))
+        image = ax.imshow(centers, aspect="auto", cmap="viridis")
+        ax.set_xlabel("Feature index")
+        ax.set_ylabel("Cluster ID")
+        ax.set_title("Cluster centres in stored feature space")
+        fig.colorbar(image, ax=ax, label="Stored feature value")
+        fig.tight_layout()
+        st.pyplot(fig, use_container_width=True)
+
+        st.caption(
+            "These are feature-space clusters, not geographic regions. "
+            "A cluster ID does not identify a city, forest, or water body."
+        )
+
+        selected_cluster = st.selectbox(
+            "Inspect a cluster centre",
+            options=list(range(len(centers))),
+        )
+
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "Feature index": np.arange(centers.shape[1]),
+                    "Centre value": centers[selected_cluster],
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.download_button(
+            "Download cluster centres",
+            data=pd.DataFrame(centers).to_csv(index=False).encode("utf-8"),
+            file_name="orbital_cluster_centres.csv",
+            mime="text/csv",
+        )
+
+    else:
+        st.info(
+            "A cluster model with `cluster_centers_` was not found in the "
+            "artifact. Verify the saved model key and artifact structure."
+        )
+
+    if distance_matrix is not None:
+        try:
+            distances = np.asarray(distance_matrix, dtype=float)
+
+            if distances.ndim == 2:
+                st.markdown("#### Stored target-distance matrix")
+
+                fig, ax = plt.subplots(figsize=(7, 5))
+                plot = ax.imshow(distances, cmap="magma", aspect="auto")
+                ax.set_xlabel("Target index")
+                ax.set_ylabel("Target index")
+                ax.set_title("Stored pairwise distances")
+                fig.colorbar(plot, ax=ax)
+                fig.tight_layout()
+                st.pyplot(fig, use_container_width=True)
+
+        except Exception as exc:
+            st.warning(f"Could not display the distance matrix: {exc}")
+
+
+# ============================================================
+# 04 — REINFORCEMENT-LEARNING RESEARCH
+# ============================================================
+
+st.divider()
+st.markdown(
+    '<div class="module">04 / OBSERVATORY MODULE</div>',
+    unsafe_allow_html=True,
+)
+st.header("Reinforcement-learning research")
+st.write(
+    "Inspect the saved agents and understand the observation-planning "
+    "experiment."
+)
+
+st.markdown("### What is the agent learning?")
+st.write(
+    "Under a limited observation budget, an agent chooses which spectral "
+    "target to observe. A novelty-aware reward can favour observations "
+    "that add information beyond what has already been seen."
+)
+
+rl_cols = st.columns(2)
+
+with rl_cols[0]:
+    st.markdown("#### Q-learning")
+    st.metric("Stored states", len(q_learning or {}))
+    st.caption("Off-policy temporal-difference learning.")
+
+with rl_cols[1]:
+    st.markdown("#### SARSA")
+    st.metric("Stored states", len(sarsa or {}))
+    st.caption("On-policy temporal-difference learning.")
+
+st.markdown(
+    """
+    <div class="panel">
+        <strong>Evaluation status</strong><br><br>
+        The saved Q-learning and SARSA tables are loaded, but the original
+        <code>OrbitalEnvV2</code> state encoding, action selection, transition
+        rules, and reward function must be restored before new missions can
+        be reported as evaluations of these trained agents.<br><br>
+        This dashboard does not fabricate learned-policy performance.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+with st.expander("Inspect artifact keys"):
+    if isinstance(artifact, dict):
+        st.write("Saved keys:")
+        st.code("\n".join(str(key) for key in artifact.keys()))
+
+        st.write("Q-learning table type:", type(q_learning).__name__)
+        st.write("SARSA table type:", type(sarsa).__name__)
+
+        if isinstance(q_learning, dict) and q_learning:
+            st.write("Example Q-learning state:")
+            st.code(repr(next(iter(q_learning.keys())))[:1000])
+
+        if isinstance(sarsa, dict) and sarsa:
+            st.write("Example SARSA state:")
+            st.code(repr(next(iter(sarsa.keys())))[:1000])
+
+
+# ============================================================
+# 05 — METHODS AND PROVENANCE
+# ============================================================
+
+st.divider()
+st.markdown(
+    '<div class="module">05 / OBSERVATORY MODULE</div>',
+    unsafe_allow_html=True,
+)
+st.header("Methods and data provenance")
+
+with st.expander("Project methodology and limitations", expanded=True):
+    st.markdown(
+        """
+        **NASA imagery**
+        - Global satellite visualization is requested from NASA GIBS.
+        - NASA Worldview provides a separate interactive Earth-observation viewer.
+        - NASA imagery is not automatically fed into the EuroSAT-trained clustering model.
+
+        **EuroSAT MSI**
+        - Multispectral samples come from `blanchon/EuroSAT_MSI`.
+        - The feature pipeline uses 13 band means and six statistics from NDVI, NDWI, and NDBI.
+        - Index maps are spectral indicators, not verified land-cover labels.
+
+        **Spectral clustering**
+        - Groups represent similarity in the stored feature space.
+        - Cluster IDs are arbitrary and do not encode geographic coordinates.
+
+        **Reinforcement learning**
+        - Saved Q-learning and SARSA tables are loaded from `orbital_models.pkl`.
+        - Faithful policy evaluation requires the exact training environment, state representation, transition rules, and reward function.
+        - This prototype is not an operational satellite controller.
+        """
+    )
+
+st.caption(
+    "NASA GIBS imagery services are provided through NASA's Earth Science "
+    "Data and Information System. EuroSAT and RL experiments are separate "
+    "components of this research prototype."
+)
+
+st.markdown("---")
+st.markdown(
+    '<div class="eyebrow">ORBITAL · EARTH OBSERVATION · REMOTE SENSING · AI</div>',
+    unsafe_allow_html=True,
+)
