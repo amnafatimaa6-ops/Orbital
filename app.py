@@ -723,72 +723,11 @@ with tabs[1]:
     st.link_button("NASA GIBS / Worldview ↗", NASA_WORLDVIEW)
 
 # ---------------------------------------------------------
-# SPECTRAL LAB
+# SPECTRAL LAB — REMOVED
 # ---------------------------------------------------------
 
 with tabs[2]:
-    st.subheader("Spectral Lab")
-    st.write(
-        "Inspect numeric spectral fields available in a small EuroSAT MSI sample."
-    )
-
-    if st.button("Load EuroSAT sample", key="load_eurosat"):
-        st.session_state["orbital_load_eurosat"] = True
-
-    if st.session_state.get("orbital_load_eurosat", False):
-        with st.spinner("Loading a small EuroSAT sample..."):
-            spectral_df, spectral_message = load_eurosat_sample()
-
-        if spectral_df is not None and not spectral_df.empty:
-            st.success(f"Loaded {len(spectral_df)} sample rows.")
-            st.dataframe(spectral_df.head(20), width="stretch")
-
-            numeric_cols = spectral_df.select_dtypes(
-                include=np.number
-            ).columns.tolist()
-
-            if numeric_cols:
-                chosen = st.selectbox(
-                    "Choose a numeric feature",
-                    numeric_cols,
-                    key="spectral_feature",
-                )
-
-                fig, ax = plt.subplots(figsize=(9, 3.5))
-                ax.hist(
-                    spectral_df[chosen].dropna(),
-                    bins=20,
-                    edgecolor="black",
-                )
-                ax.set_title(f"Distribution: {chosen}")
-                ax.set_xlabel(chosen)
-                ax.set_ylabel("Frequency")
-                fig.tight_layout()
-                st.pyplot(fig)
-                plt.close(fig)
-            else:
-                st.info("No numeric spectral columns were found in this sample.")
-
-        else:
-            st.warning(
-                spectral_message
-                or "Spectral data is currently unavailable."
-            )
-            st.link_button("Open EuroSAT MSI dataset ↗", EUROSAT_URL)
-    else:
-        st.info(
-            "Select “Load EuroSAT sample” to request a small sample. "
-            "No dataset is downloaded until you request it."
-        )
-
-    st.divider()
-    st.markdown("#### About spectral indices")
-    st.write(
-        "NDVI, NDWI, and NDBI require correctly identified spectral bands. "
-        "This interface does not calculate those indices unless the necessary "
-        "band names and channel mapping are available."
-    )
-
+    pass
 # ---------------------------------------------------------
 # TARGET EXPLORER
 # ---------------------------------------------------------
