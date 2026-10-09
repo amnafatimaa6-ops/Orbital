@@ -1,0 +1,33 @@
+{
+  "project": "ORBITAL",
+  "n_samples": 600,
+  "n_features": 19,
+  "n_targets": 8,
+  "rl_budget": 6,
+  "cloud_model": "Simulated target-dependent cloud risk and two weather regimes",
+  "algorithms": [
+    "Q-learning",
+    "SARSA"
+  ],
+  "feature_names": [
+    "B1_mean",
+    "B2_mean",
+    "B3_mean",
+    "B4_mean",
+    "B5_mean",
+    "B6_mean",
+    "B7_mean",
+    "B8_mean",
+    "B9_mean",
+    "B10_mean",
+    "B11_mean",
+    "B12_mean",
+    "B13_mean",
+    "NDVI_mean",
+    "NDVI_std",
+    "NDWI_mean",
+    "NDWI_std",
+    "NDBI_mean",
+    "NDBI_std"
+  ]
+}
