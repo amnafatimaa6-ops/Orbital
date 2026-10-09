@@ -1,6 +1,7 @@
 
 import json
 import pickle
+import time
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -14,57 +15,84 @@ ROOT = Path(__file__).resolve().parent
 st.set_page_config(
     page_title="ORBITAL | Earth Observation",
     page_icon="🛰️",
-    layout="wide"
+    layout="wide",
 )
 
 st.title("🛰️ ORBITAL")
 st.subheader("Reinforcement Learning for Information-Efficient Earth Observation")
 st.write(
-    "A research prototype combining multispectral satellite imagery, "
-    "spectral clustering, and tabular reinforcement learning."
+    "A research prototype combining real multispectral satellite imagery, "
+    "unsupervised spectral clustering, and tabular reinforcement learning."
 )
 
 st.warning(
-    "EuroSAT imagery is real. Weather regimes, cloud risks, energy costs, "
-    "and observation transitions in the RL environment are simulated. "
-    "This is not a physical orbital simulator."
+    "Scientific scope: EuroSAT imagery is real. Cloud risks, weather regimes, "
+    "energy costs, and observation transitions are simulated. This is not "
+    "a physical orbital simulator or a validated mission planner."
 )
 
 
+# ---------------------------------------------------------
+# 1. LOAD YOUR SAVED MODELS
+# ---------------------------------------------------------
+
 @st.cache_resource
 def load_models():
-    with open(ROOT / "orbital_models.pkl", "rb") as f:
-        models = pickle.load(f)
-
+    model_path = ROOT / "orbital_models.pkl"
     metadata_path = ROOT / "metadata.json"
-    metadata = (
-        json.loads(metadata_path.read_text())
-        if metadata_path.exists() else {}
-    )
+
+    if not model_path.exists():
+        raise FileNotFoundError("orbital_models.pkl is missing from the repository.")
+
+    # Only load pickle files from your own trusted repository.
+    with open(model_path, "rb") as file:
+        models = pickle.load(file)
+
+    metadata = {}
+    if metadata_path.exists():
+        metadata = json.loads(metadata_path.read_text())
+
     return models, metadata
 
 
 try:
     models, metadata = load_models()
+
     q_table = models["q_learning"]
     sarsa_table = models["sarsa"]
     scaler = models["scaler"]
     cluster_model = models["region_model"]
     centers = np.asarray(models["target_features"])
     distances = np.asarray(models["distance_matrix"])
+
 except Exception as exc:
-    st.error(f"Unable to load saved models: {exc}")
+    st.error(f"Could not load saved models: {exc}")
+    st.info(
+        "Check that orbital_models.pkl and metadata.json are in the "
+        "repository root and that the scikit-learn version is compatible."
+    )
     st.stop()
 
+
+# ---------------------------------------------------------
+# 2. FEATURE EXTRACTION
+# ---------------------------------------------------------
 
 def spectral_features(image):
     image = np.asarray(image, dtype=np.float32)
 
+    if image.shape != (64, 64, 13):
+        raise ValueError(
+            f"Expected an image with shape (64, 64, 13), got {image.shape}"
+        )
+
     band_means = image.mean(axis=(0, 1))
+
     green = image[:, :, 2]
     red = image[:, :, 3]
     nir = image[:, :, 7]
     swir = image[:, :, 11]
+
     eps = 1e-8
 
     ndvi = (nir - red) / (nir + red + eps)
@@ -76,38 +104,95 @@ def spectral_features(image):
         [
             ndvi.mean(), ndvi.std(),
             ndwi.mean(), ndwi.std(),
-            ndbi.mean(), ndbi.std()
-        ]
+            ndbi.mean(), ndbi.std(),
+        ],
     ])
 
 
-@st.cache_data(ttl=3600)
-def fetch_eurosat_samples():
-    """Fetch a small set of patches from the public dataset viewer."""
-    api = "https://datasets-server.huggingface.co/rows"
-    dataset_name = "blanchon/EuroSAT_MSI"
+# ---------------------------------------------------------
+# 3. ROBUST ONLINE EURO SAT IMAGE RETRIEVAL
+# ---------------------------------------------------------
 
-    # Spread requests across the dataset rather than downloading it all.
-    offsets = [0, 1600, 3200, 4800, 6400, 8000, 9600, 11200]
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_eurosat_samples():
+    """
+    Try the Hugging Face dataset viewer with retries.
+    If that fails, try loading the dataset with the datasets library.
+    Only a small number of image patches are retained.
+    """
+    import requests
+
+    dataset_name = "blanchon/EuroSAT_MSI"
+    api = "https://datasets-server.huggingface.co/rows"
+
+    # First strategy: viewer API, with retry and partial-success support.
+    offsets = [0, 100, 500, 1000, 1600, 3200, 4800, 6400, 8000, 9600, 11200]
     samples = []
+    errors = []
+
+    session = requests.Session()
 
     for offset in offsets:
-        response = requests.get(
-            api,
-            params={
-                "dataset": dataset_name,
-                "config": "default",
-                "split": "train",
-                "offset": offset,
-                "length": 1,
-            },
-            timeout=45,
-        )
-        response.raise_for_status()
-        rows = response.json().get("rows", [])
+        for attempt in range(3):
+            try:
+                response = session.get(
+                    api,
+                    params={
+                        "dataset": dataset_name,
+                        "config": "default",
+                        "split": "train",
+                        "offset": offset,
+                        "length": 1,
+                    },
+                    timeout=30,
+                )
+                response.raise_for_status()
 
-        for item in rows:
-            row = item.get("row", {})
+                rows = response.json().get("rows", [])
+
+                for item in rows:
+                    row = item.get("row", {})
+                    image = row.get("image")
+
+                    if isinstance(image, dict):
+                        image = image.get("array", image.get("data"))
+
+                    if image is None:
+                        continue
+
+                    image = np.asarray(image)
+
+                    if image.shape == (64, 64, 13):
+                        samples.append({
+                            "image": image,
+                            "label": str(row.get("label", "Unknown")),
+                            "filename": str(
+                                row.get("filename", f"patch_{offset}")
+                            ),
+                        })
+
+                break
+
+            except Exception as exc:
+                errors.append(f"Viewer offset {offset}: {exc}")
+                time.sleep(1.0 + attempt)
+
+    if samples:
+        return samples
+
+    # Second strategy: official Hugging Face datasets library.
+    try:
+        from datasets import load_dataset
+
+        dataset = load_dataset(
+            dataset_name,
+            split="train",
+            streaming=True,
+        )
+
+        fallback_samples = []
+
+        for i, row in enumerate(dataset):
             image = row.get("image")
 
             if isinstance(image, dict):
@@ -117,29 +202,49 @@ def fetch_eurosat_samples():
                 continue
 
             image = np.asarray(image)
+
             if image.shape == (64, 64, 13):
-                samples.append({
+                fallback_samples.append({
                     "image": image,
                     "label": str(row.get("label", "Unknown")),
-                    "filename": str(row.get("filename", "Unknown")),
+                    "filename": str(row.get("filename", f"patch_{i}")),
                 })
 
-    if not samples:
-        raise ValueError("The dataset viewer returned no usable image arrays.")
+            if len(fallback_samples) >= 8:
+                break
 
-    return samples
+        if fallback_samples:
+            return fallback_samples
 
+    except Exception as exc:
+        errors.append(f"Datasets-library fallback: {exc}")
+
+    raise RuntimeError(
+        "Both online retrieval methods failed. The public dataset may be "
+        "temporarily unavailable or require a different configuration. "
+        "Try again later. Details: " + " | ".join(errors[-3:])
+    )
+
+
+# ---------------------------------------------------------
+# 4. VISUALIZATION HELPERS
+# ---------------------------------------------------------
 
 def stretch(band):
     band = np.asarray(band, dtype=float)
-    lo, hi = np.percentile(band, [2, 98])
-    if hi <= lo:
+    low, high = np.nanpercentile(band, [2, 98])
+
+    if high <= low:
         return np.zeros_like(band)
-    return np.clip((band - lo) / (hi - lo), 0, 1)
+
+    return np.clip((band - low) / (high - low), 0, 1)
 
 
 def composite(image, bands):
-    return np.dstack([stretch(image[:, :, b]) for b in bands])
+    return np.dstack([
+        stretch(image[:, :, band])
+        for band in bands
+    ])
 
 
 def spectral_index(image, a, b):
@@ -148,194 +253,271 @@ def spectral_index(image, a, b):
     return (a - b) / (a + b + 1e-8)
 
 
-# Overview
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Spectral targets", len(distances))
-c2.metric("Features per patch", scaler.n_features_in_)
-c3.metric("Q-learning states", len(q_table))
-c4.metric("SARSA states", len(sarsa_table))
+# ---------------------------------------------------------
+# 5. PROJECT OVERVIEW
+# ---------------------------------------------------------
+
+col1, col2, col3, col4 = st.columns(4)
+
+col1.metric("Spectral targets", len(distances))
+col2.metric("Features per patch", scaler.n_features_in_)
+col3.metric("Q-learning states", len(q_table))
+col4.metric("SARSA states", len(sarsa_table))
 
 st.caption(
-    "The state counts describe saved Q-table entries, not the number "
-    "of training episodes."
+    "State counts refer to saved Q-table entries, not training episodes."
 )
 
-tab1, tab2, tab3, tab4 = st.tabs([
-    "Satellite imagery",
-    "Spectral analysis",
-    "RL models",
-    "Metadata"
+tab_images, tab_spectra, tab_rl, tab_metadata = st.tabs([
+    "🛰️ Satellite imagery",
+    "📊 Spectral analysis",
+    "🧠 RL models",
+    "📁 Metadata",
 ])
 
 
-with tab1:
-    st.header("Live dataset retrieval")
+# ---------------------------------------------------------
+# 6. SATELLITE IMAGERY
+# ---------------------------------------------------------
 
-    if st.button("Load real EuroSAT image patches"):
-        try:
-            st.session_state["orbital_samples"] = fetch_eurosat_samples()
-        except Exception as exc:
-            st.error(
-                "Could not retrieve images from the public dataset viewer. "
-                f"Please retry later. Details: {exc}"
-            )
+with tab_images:
+    st.header("Real multispectral satellite imagery")
+
+    if st.button("Load EuroSAT image patches", type="primary"):
+        with st.spinner("Retrieving images from Hugging Face..."):
+            try:
+                st.session_state["orbital_samples"] = fetch_eurosat_samples()
+                st.success(
+                    f"Loaded {len(st.session_state['orbital_samples'])} image patches."
+                )
+            except Exception as exc:
+                st.error(str(exc))
 
     samples = st.session_state.get("orbital_samples", [])
 
     if samples:
-        selected = st.selectbox(
-            "Select a satellite image",
+        selected_index = st.selectbox(
+            "Select image patch",
             range(len(samples)),
-            format_func=lambda i: samples[i]["filename"]
+            format_func=lambda i: (
+                f"Patch {i + 1} — {samples[i]['filename']}"
+            ),
         )
-        item = samples[selected]
+
+        item = samples[selected_index]
         image = item["image"]
 
         try:
             features = spectral_features(image).reshape(1, -1)
-            scaled = scaler.transform(features)
-            target = int(cluster_model.predict(scaled)[0])
-
-            st.success(f"Predicted spectral cluster: Target {target}")
-            st.caption(
-                "This is a cluster assignment from your saved model, "
-                "not a verified geographic location."
+            scaled_features = scaler.transform(features)
+            predicted_target = int(
+                cluster_model.predict(scaled_features)[0]
             )
+
+            st.success(f"Predicted spectral cluster: Target {predicted_target}")
+
         except Exception as exc:
-            st.error(f"Feature extraction or clustering failed: {exc}")
-            target = None
+            predicted_target = None
+            st.error(f"Could not classify this patch: {exc}")
 
         left, right = st.columns(2)
+
         with left:
             st.write("**True-colour composite (B4, B3, B2)**")
             st.image(
                 composite(image, [3, 2, 1]),
-                use_container_width=True
+                use_container_width=True,
             )
+
         with right:
             st.write("**False-colour composite (B8, B4, B3)**")
             st.image(
                 composite(image, [7, 3, 2]),
-                use_container_width=True
+                use_container_width=True,
             )
 
-        fig, axes = plt.subplots(1, 3, figsize=(12, 3.5))
-        for ax, pair, title in zip(
-            axes,
-            [(7, 3), (2, 7), (11, 7)],
-            ["NDVI", "NDWI", "NDBI"]
-        ):
-            ax.imshow(
-                spectral_index(image, *pair),
-                cmap="RdYlGn",
-                vmin=-1,
-                vmax=1
-            )
+        st.subheader("Spectral index maps")
+
+        fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+
+        index_specs = [
+            (7, 3, "NDVI"),
+            (2, 7, "NDWI"),
+            (11, 7, "NDBI"),
+        ]
+
+        for ax, (a, b, title) in zip(axes, index_specs):
+            result = spectral_index(image, a, b)
+            plot = ax.imshow(result, cmap="RdYlGn", vmin=-1, vmax=1)
             ax.set_title(title)
             ax.axis("off")
+            fig.colorbar(plot, ax=ax, fraction=0.046)
 
         fig.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
 
-        st.write("Source label:", item["label"])
-        st.write("Source filename:", item["filename"])
+        st.write("Dataset label:", item["label"])
+        st.write("Image filename:", item["filename"])
+
     else:
         st.info(
-            "Click the button to retrieve a small sample from the public "
-            "EuroSAT dataset. No complete dataset download is required."
+            "Click 'Load EuroSAT image patches'. If Hugging Face is "
+            "temporarily unavailable, you can still use the spectral "
+            "analysis and saved RL model tabs."
         )
 
 
-with tab2:
+# ---------------------------------------------------------
+# 7. SPECTRAL ANALYSIS
+# ---------------------------------------------------------
+
+with tab_spectra:
     st.header("Spectral target analysis")
 
-    target = st.selectbox(
-        "Select a target cluster",
+    target_id = st.selectbox(
+        "Choose a spectral target",
         range(len(centers)),
-        key="target_select"
     )
 
-    st.write(f"**Target {target} centroid**")
-    st.line_chart(pd.DataFrame({
-        "Standardized centroid": centers[target]
-    }))
+    st.subheader(f"Target {target_id}: feature centroid")
 
-    st.write("**Pairwise target distance matrix**")
+    centroid_df = pd.DataFrame({
+        "Standardized centroid": centers[target_id],
+    })
+    st.line_chart(centroid_df)
+
+    st.subheader("Pairwise target distances")
+
+    distance_df = pd.DataFrame(
+        distances,
+        index=[f"Target {i}" for i in range(len(distances))],
+        columns=[f"Target {i}" for i in range(len(distances))],
+    )
+
     st.dataframe(
-        pd.DataFrame(
-            distances,
-            index=[f"Target {i}" for i in range(len(distances))],
-            columns=[f"Target {i}" for i in range(len(distances))]
-        ).round(3),
-        use_container_width=True
+        distance_df.round(3),
+        use_container_width=True,
     )
 
     st.caption(
-        "Centroids use standardized features. Clusters represent spectral "
-        "similarity and should not automatically be interpreted as land-cover classes."
+        "Clusters represent spectral similarity. They are not automatically "
+        "verified land-cover labels or geographic regions."
     )
 
+    summary_file = ROOT / "orbital_spectral_targets.csv"
 
-with tab3:
+    if summary_file.exists():
+        st.subheader("Saved target summary")
+        st.dataframe(
+            pd.read_csv(summary_file),
+            use_container_width=True,
+        )
+
+
+# ---------------------------------------------------------
+# 8. INSPECT SAVED Q-LEARNING AND SARSA
+# ---------------------------------------------------------
+
+with tab_rl:
     st.header("Saved reinforcement learning agents")
 
-    policy_name = st.radio(
-        "Select saved agent",
+    chosen_policy = st.radio(
+        "Agent",
         ["Q-learning", "SARSA"],
-        horizontal=True
+        horizontal=True,
     )
-    table = q_table if policy_name == "Q-learning" else sarsa_table
 
-    st.metric("Saved state-action entries", len(table))
-    st.write(
-        f"The {policy_name} Q-table is loaded from your saved pickle file."
-    )
+    table = q_table if chosen_policy == "Q-learning" else sarsa_table
+
+    st.metric("States in saved Q-table", len(table))
 
     if table:
-        states = list(table.keys())
-        state_idx = st.number_input(
-            "Inspect saved state index",
+        state_list = list(table.keys())
+
+        state_index = st.number_input(
+            "Choose a saved state index",
             min_value=0,
-            max_value=len(states) - 1,
+            max_value=len(state_list) - 1,
             value=0,
-            step=1
+            step=1,
         )
-        state = states[int(state_idx)]
-        values = np.asarray(table[state])
+
+        selected_state = state_list[int(state_index)]
+        action_values = np.asarray(table[selected_state])
 
         st.write("**State representation**")
-        st.code(repr(state))
+        st.code(repr(selected_state))
+
         st.write("**Action values**")
         st.bar_chart(pd.DataFrame({
-            "Action value": values
+            "Q-value": action_values,
         }))
-        st.write("Greedy action:", int(np.argmax(values)))
+
+        st.write(
+            "Greedy action selected for this saved state:",
+            int(np.argmax(action_values)),
+        )
+
+        st.caption(
+            "This inspects stored values; it does not claim to reproduce "
+            "a complete evaluation episode."
+        )
+
     else:
-        st.info("This Q-table is empty.")
+        st.warning("The selected Q-table is empty.")
 
 
-with tab4:
-    st.header("Experiment metadata")
+# ---------------------------------------------------------
+# 9. METADATA AND FILES
+# ---------------------------------------------------------
+
+with tab_metadata:
+    st.header("Saved model metadata")
     st.json(metadata)
 
-    st.write("**Saved model artifacts**")
-    for key, value in models.items():
-        if key in ("q_learning", "sarsa"):
-            st.write(f"- {key}: {len(value)} states")
-        elif hasattr(value, "shape"):
-            st.write(f"- {key}: shape {value.shape}")
-        else:
-            st.write(f"- {key}: {type(value).__name__}")
+    st.subheader("Loaded artifacts")
 
-    st.info(
-        "Training curves and policy evaluation CSVs were not included in "
-        "the uploaded repository files. This dashboard does not invent "
-        "those results; add the original files from Colab to display them."
-    )
+    for name, value in models.items():
+        if name in ("q_learning", "sarsa"):
+            st.write(f"- {name}: {len(value)} states")
+        elif hasattr(value, "shape"):
+            st.write(f"- {name}: shape {value.shape}")
+        else:
+            st.write(f"- {name}: {type(value).__name__}")
+
+    st.subheader("Optional result files")
+
+    result_files = [
+        "orbital_spectral_targets.csv",
+        "orbital_policy_rewards.csv",
+        "orbital_policy_diversity.csv",
+        "orbital_learning_curve.csv",
+        "orbital_results.png",
+        "orbital_rl_comparison.png",
+    ]
+
+    for filename in result_files:
+        path = ROOT / filename
+
+        if not path.exists():
+            st.caption(f"Not uploaded: {filename}")
+            continue
+
+        if path.suffix == ".csv":
+            st.markdown(f"**{filename}**")
+            st.dataframe(
+                pd.read_csv(path),
+                use_container_width=True,
+            )
+
+        elif path.suffix == ".png":
+            st.markdown(f"**{filename}**")
+            st.image(str(path), use_container_width=True)
+
 
 st.divider()
 st.caption(
-    "ORBITAL research prototype | EuroSAT multispectral data | "
+    "ORBITAL | EuroSAT multispectral imagery | Spectral clustering | "
     "Tabular reinforcement learning"
 )
