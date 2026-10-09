@@ -1116,5 +1116,9 @@ with tab_methods:
             f"- [EuroSAT MSI]({EUROSAT_URL}) multispectral patches"
         )
 
+
 st.divider()
-st.caption("ORBITAL · Research prototype · Not affiliated with NASA. External data belongs to its providers.")
+st.caption(
+    "ORBITAL · Research prototype · Not affiliated with NASA. "
+    "Not intended for operational satellite guidance."
+)
