@@ -1,260 +1,173 @@
 # ORBITAL
 
-### Reinforcement Learning for Information-Efficient Earth Observation
+**Can a reinforcement learning agent learn to pick more useful satellite observation targets when it only gets a few shots and the weather might ruin them?**
 
-ORBITAL is an experimental research project exploring how reinforcement learning can help prioritize Earth-observation targets under limited observation budgets, uncertain weather conditions, and varying spectral information value.
+ORBITAL is a small undergraduate research project that combines Sentinel-2 satellite imagery with reinforcement learning. I use real multispectral image patches to build a set of "targets", then train agents (Q-learning and SARSA) in a simulated environment to choose which targets to observe with a limited budget, and compare them against random and greedy strategies.
 
-The project combines multispectral remote-sensing data from Sentinel-2 imagery with spectral feature engineering, unsupervised clustering, and tabular reinforcement learning. It investigates whether an intelligent observation policy can select a more informative and diverse set of targets than a random strategy.
+Everything lives in one notebook (`Notebook (2).ipynb`), and the results below are copied from its outputs.
 
-The work was developed as a reproducible Python research notebook, with experiments covering spectral analysis, target selection, reward design, and policy evaluation.
+> **Important:** the targets are *spectral clusters*, not real places on Earth, and the clouds, weather and costs are *simulated*. This is a learning/research prototype, not a real satellite scheduler.
 
-## Research Objectives
+---
 
-The central question behind ORBITAL is:
+## The idea in plain words
 
-**Can a reinforcement learning agent improve observation efficiency by prioritizing spectrally diverse targets when observation opportunities are limited and conditions are uncertain?**
+A satellite can't photograph everything. Each pass it has a limited number of observations, and clouds can ruin some of them. So which targets should it pick? A good choice is usually targets that look *different* from what it has already seen, so it doesn't waste shots on near-duplicates.
 
-To investigate this question, the project focuses on five objectives:
+I turned that into a small game:
 
-* Extract meaningful spectral features from multispectral satellite imagery.
-* Group observations into spectral clusters to construct candidate observation targets.
-* Design a simulated environment with limited observation budgets, cloud-related failures, and observation costs.
-* Train and compare Q-learning and SARSA agents.
-* Evaluate learned policies against random selection and a greedy diversity-based baseline.
+1. Take real satellite image patches and group them by how they look spectrally (8 groups = 8 "targets").
+2. Measure how different each pair of targets is.
+3. Let an agent pick targets one at a time (6 picks per episode). It gets rewarded for picking something new and penalized for cloud failures, repeats and costs.
+4. See whether a learned policy beats random picking and a simple "pick the most different one" rule.
+
+---
 
 ## Dataset
 
-ORBITAL uses the [EuroSAT MSI dataset](https://huggingface.co/datasets/blanchon/EuroSAT_MSI), accessed through the Hugging Face `datasets` library.
+[EuroSAT MSI](https://huggingface.co/datasets/blanchon/EuroSAT_MSI), loaded through Hugging Face `datasets`.
 
-The dataset contains multispectral Sentinel-2 image patches representing different land-cover classes.
+| Property | Value |
+|---|---|
+| Patches available | 16,200 |
+| Patches used | 600 (random sample, seed 42) |
+| Patch size | 64 × 64 pixels |
+| Spectral bands | 13 (Sentinel-2) |
 
-| Property                     | Value             |
-| ---------------------------- | ----------------- |
-| Dataset                      | EuroSAT MSI       |
-| Total available observations | 16,200            |
-| Sample used in experiments   | 600 image patches |
-| Image dimensions             | 64 × 64 pixels    |
-| Spectral bands               | 13                |
-| Extracted features           | 19                |
-| Candidate spectral targets   | 8                 |
+The dataset's land-cover labels are **not** used. The clustering is fully unsupervised.
 
-A fixed random seed is used when sampling observations to support reproducibility.
+---
 
-## Methodology
+## What the notebook does
 
-### 1. Multispectral feature engineering
+### 1. Feature extraction (19 features per patch)
+- Mean value of each of the 13 bands
+- Mean and standard deviation of **NDVI** (vegetation), **NDWI** (green vs NIR, used here as a water-related index) and **NDBI** (built-up/SWIR vs NIR), computed per pixel and then summarized per patch
 
-Each image patch is represented by 19 numerical features:
+Features are standardized with `StandardScaler`.
 
-* Mean reflectance across the 13 spectral bands.
-* Mean and standard deviation of NDVI.
-* Mean and standard deviation of NDWI.
-* Mean and standard deviation of NDBI.
+### 2. PCA for visualization
+The 19 features are reduced to 2 components for a scatter plot. These two components capture **72.91%** of the variance.
 
-The indices are calculated pixel-wise and then summarized across each image patch.
+### 3. Building the targets
+`MiniBatchKMeans` groups the 600 patches into **8 clusters** (cluster sizes: 99, 107, 57, 82, 71, 71, 49, 64). Each cluster is a "target". Distances between cluster centers are normalized to 0–1 and stored as a **dissimilarity matrix**, which is used as a stand-in for "how new is this target compared to what I've already seen".
 
-The extracted features are standardized before clustering and dimensionality reduction.
+Cluster summaries show the targets make physical sense. For example, Target 2 is the only cluster with a positive mean NDWI (0.446), which is consistent with water-like patches, and Targets 4 and 5 have the highest NDVI (0.641 and 0.699), consistent with vegetation.
 
-### 2. Spectral analysis and dimensionality reduction
+### 4. Environments
 
-Principal Component Analysis (PCA) reduces the 19-dimensional standardized feature space to two components for visualization.
+**v1 (simple):** budget of 6 observations, fixed 20% cloud-failure chance, observation cost 0.10. Reward = novelty (minimum distance to already-observed targets) − costs. A failed observation costs an extra 0.25 and a repeated target costs an extra 0.50.
 
-In the reported experiment, the first two principal components represent **72.91% of the variance** in the standardized feature matrix.
+**v2 (more realistic-ish, still synthetic):**
+- cloud risk depends on the target (10% to 40%)
+- each target has an energy cost (0.05 to 0.20)
+- two weather regimes (good/bad) that flip with 25% chance each step; bad weather adds 0.25 to cloud probability
+- weather is part of the agent's state
 
-This projection provides a compact view of spectral variation across the sampled observations.
+### 5. Agents
+- **Q-learning** (tabular) and **SARSA** (tabular)
+- State = last target, set of visited targets, remaining budget (+ weather in v2)
+- 6,000 training episodes, learning rate 0.15, discount 0.95, epsilon-greedy with epsilon decaying from 1.0 to 0.05
 
-### 3. Unsupervised target discovery
+### 6. Baselines
+- **Random:** picks any target
+- **Greedy:** picks the unvisited target farthest (in spectral distance) from the ones already visited. It ignores weather and costs.
 
-MiniBatch K-Means groups the 600 observations into eight spectral clusters.
-
-The cluster centroids represent characteristic spectral profiles. Pairwise Euclidean distances between these centroids are normalized to construct a target-dissimilarity matrix.
-
-This matrix is used as a proxy for spectral novelty when selecting observations.
-
-Importantly, these targets are **spectral clusters, not geographic locations or independently verified satellite acquisition sites**.
-
-### 4. Simulated Earth-observation environment
-
-A custom environment models sequential target selection under a limited observation budget.
-
-The environment incorporates:
-
-* A finite number of observation opportunities.
-* Target-dependent cloud risks.
-* Stochastic weather regimes.
-* Observation and energy costs.
-* Penalties for failed observations and repeated selections.
-* Rewards for successfully observing spectrally novel targets.
-
-The initial environment uses a fixed cloud-failure probability. A second version introduces target-dependent cloud risks and two simulated weather regimes.
-
-These environmental conditions are synthetic and are intended to test decision-making behavior, not to reproduce actual satellite operations or forecast real cloud cover.
-
-### 5. Reinforcement learning
-
-Two tabular reinforcement learning algorithms are implemented:
-
-**Q-learning** learns action values using the maximum estimated value of the next state.
-
-**SARSA** learns action values using the next action selected by its current epsilon-greedy policy.
-
-Both agents use a discrete state representation containing the last selected target, the set of visited targets, the remaining observation budget, and, in the second environment, the simulated weather regime.
-
-The main reported training configuration uses 6,000 episodes, a learning rate of 0.15, a discount factor of 0.95, and an epsilon-greedy exploration schedule.
-
-### 6. Policy evaluation
-
-The experiments compare three selection strategies:
-
-* **Random:** selects targets without an information-based strategy.
-* **Greedy:** prioritizes the target with the greatest minimum spectral distance from previously visited targets.
-* **Q-learning:** selects targets using learned action values.
-
-The evaluation considers mean episode reward, reward variability, unique targets observed, and pairwise spectral diversity.
-
-A separate experiment compares Q-learning with SARSA.
+---
 
 ## Results
 
-### Policy comparison in the second simulated environment
+### v1 environment (2,000 evaluation episodes)
 
-The following values are from the reported 2,000-episode evaluation of the second environment.
+| Policy | Mean reward | Reward std | Mean unique targets |
+|---|---|---|---|
+| Random | 0.802 | 0.733 | 3.792 |
+| Greedy | **2.300** | 0.660 | 4.839 |
+| Q-learning | 2.266 | 0.773 | 4.839 |
 
-| Policy     | Mean reward | Reward standard deviation | Mean unique targets |
-| ---------- | ----------: | ------------------------: | ------------------: |
-| Random     |      -0.328 |                     0.751 |               3.084 |
-| Greedy     |       0.524 |                     1.002 |               3.553 |
-| Q-learning |       0.536 |                     0.683 |               3.929 |
+In the simple environment the greedy rule is actually slightly better than Q-learning (difference: −0.033). That makes sense, since greedy is almost exactly what the reward asks for. I kept this result because it's honest.
 
-In this experiment, Q-learning achieves the highest mean reward and observes more unique targets on average than either baseline.
+### v2 environment (2,000 evaluation episodes)
 
-The mean reward difference between Q-learning and the greedy baseline is relatively small. This suggests that the learned policy offers a modest improvement in this particular simulated setting, rather than establishing a general advantage over heuristic methods.
+| Policy | Mean reward | Reward std | Mean unique targets |
+|---|---|---|---|
+| Random | -0.328 | 0.751 | 3.084 |
+| Greedy | 0.524 | 1.002 | 3.553 |
+| Q-learning | **0.536** | **0.683** | **3.929** |
 
-### Spectral diversity
+When clouds, weather and energy costs are added, Q-learning edges ahead of greedy on mean reward, with lower variance and more unique targets. The reward gap versus greedy (0.536 vs 0.524) is very small, so I would not claim Q-learning is clearly better, only that it is competitive and more consistent here.
 
-A separate evaluation reports the following mean pairwise spectral-diversity scores:
+### Spectral diversity in v2 (1,000 episodes)
 
-| Policy     | Mean unique targets | Mean pairwise diversity |
-| ---------- | ------------------: | ----------------------: |
-| Random     |               3.086 |                   0.480 |
-| Greedy     |               3.579 |                   0.661 |
-| Q-learning |               3.950 |                   0.514 |
+| Policy | Mean unique targets | Mean pairwise diversity |
+|---|---|---|
+| Random | 3.086 | 0.480 |
+| Greedy | 3.579 | **0.661** |
+| Q-learning | **3.950** | 0.514 |
 
-These results reveal an important trade-off. Q-learning observes more unique targets on average, while the greedy baseline achieves greater mean pairwise spectral diversity.
+Q-learning covers more distinct targets, but greedy picks sets that are *more different from each other*. So "more targets" and "more diverse targets" are not the same thing.
 
-Consequently, observing more unique targets does not necessarily mean selecting the most spectrally diverse collection. The results motivate further work on multi-objective reward design.
+### Q-learning vs SARSA in v2 (2,000 held-out episodes)
 
-### Q-learning versus SARSA
+| Agent | Mean reward | Reward std | Mean unique targets |
+|---|---|---|---|
+| Q-learning | **0.550** | 0.660 | **3.952** |
+| SARSA | 0.421 | 0.610 | 3.760 |
 
-The reported held-out comparison gives the following results:
+### Training curves
+- v1 Q-learning: mean reward rose from 0.926 (first 500 episodes) to 2.045 (last 500)
+- v2 Q-learning: from -0.275 to 0.387
+- v2 SARSA: from -0.297 to 0.395
 
-| Algorithm  | Mean reward | Reward standard deviation | Mean unique targets |
-| ---------- | ----------: | ------------------------: | ------------------: |
-| Q-learning |       0.550 |                     0.660 |               3.952 |
-| SARSA      |       0.421 |                     0.610 |               3.760 |
+### Other plots the notebook produces
+PCA scatter plot, true-colour / false-colour / SWIR composites of a sample patch, NDVI/NDWI/NDBI maps, mean-index bar chart per cluster, sample images from Targets 2 and 5, dissimilarity heatmap, target-selection frequency chart (Random vs Q-learning), a 4-panel results summary (`orbital_results.png`) and a Q-learning vs SARSA comparison (`orbital_rl_comparison.png`).
 
-Under this evaluation configuration, Q-learning achieves higher mean reward and greater observation coverage than SARSA. These results describe the tested environment and configuration; further repeated experiments are required to establish how consistently the difference holds.
-
-### Spectral analysis outputs
-
-The notebook also generates:
-
-* A two-component PCA projection of the spectral feature space.
-* True-colour and false-colour image composites.
-* NDVI, NDWI, and NDBI maps for a representative image patch.
-* Cluster-level spectral-index summaries.
-* A normalized spectral-dissimilarity matrix.
-* Target-selection frequency plots.
-* Training curves and reinforcement learning comparisons.
-
-Together, these outputs connect the remote-sensing feature pipeline with the decision-making experiments.
+---
 
 ## Limitations
 
-ORBITAL is a research prototype, and several limitations should be considered when interpreting its results.
+- **Simulated conditions.** Clouds, weather, energy costs and rewards are made up. No real weather data, orbits, or satellite schedules are used.
+- **Targets aren't places.** They are clusters in feature space, with no coordinates attached.
+- **Novelty ≠ scientific value.** Spectral distance is a simple proxy; a "different-looking" cluster isn't automatically more important.
+- **Small sample.** Only 600 of 16,200 patches, with one random seed for sampling and clustering.
+- **Single runs, no statistics.** Each agent was trained once, so there are no confidence intervals or repeated seeds. Small differences (like Q-learning vs greedy in v2) could be noise.
+- **Different goals.** Greedy only maximizes spectral distance, while the RL agents optimize a reward that also includes failures and costs, so the comparison isn't perfectly apples-to-apples. Greedy also ignores weather.
+- **Tabular RL doesn't scale.** The state includes the set of visited targets, so the table grows quickly (about 3,100 states already with 8 targets).
+- **Unseen states during evaluation.** Q-tables are `defaultdict`s, so a state never seen in training starts with all-zero values and the agent effectively picks at random there.
+- **Same simulator for training and testing.** Evaluation uses different random seeds, but the same environment code, so this doesn't show the policy works in any other setting.
+- **No downstream check.** I did not test whether the selected observations help a real task such as land-cover classification.
 
-**Synthetic operating conditions**
+## Possible future work
 
-Cloud probabilities, weather transitions, energy costs, and observation rewards are simulated. The environment does not use real-time weather, satellite telemetry, orbital constraints, or operational acquisition data.
+- Keep coordinates/metadata so targets can be real locations
+- Use real cloud-cover data and more realistic weather models
+- Compare with stronger baselines (e.g. farthest-point sampling)
+- Run many training seeds and report confidence intervals
+- Try multi-objective rewards (diversity vs coverage vs cost)
+- Use Double Q-learning or function approximation (e.g. a small neural network) so more targets are possible
+- Give the greedy baseline the same costs/weather information for a fairer comparison
+- Test whether the chosen observations improve a downstream task
 
-**Limited sample size**
+---
 
-The main experiments use 600 patches from a dataset containing 16,200 observations. Results may change with different samples, land-cover distributions, and clustering configurations.
+## Repository contents
 
-**Spectral clusters are not physical locations**
+| File | Description |
+|---|---|
+| `Notebook (2).ipynb` | Full workflow: data, features, clustering, environments, training, evaluation, plots |
+| `orbital_models.pkl` | Saved Q-learning and SARSA tables, scaler, clustering model, distance matrix |
+| `metadata.json` | Experiment settings and feature names |
+| `requirements.txt` | Python dependencies |
+| `LICENSE` | MIT |
 
-The eight targets represent clusters in feature space. They do not correspond to actual coordinates, satellite ground tracks, or independently validated regions of interest.
+## How to run
 
-**Simplified information-value objective**
+Open the notebook and run the cells in order (the first cell installs `datasets`). Fixed seeds are used for sampling, clustering and training, though results may still vary slightly with library versions. Only load `.pkl` files from sources you trust.
 
-Spectral dissimilarity is used as a proxy for novelty. Greater spectral distance does not automatically imply greater scientific importance, environmental change, or information gain.
+## Tech
 
-**Tabular reinforcement learning**
-
-The state includes the set of visited targets, causing the state space to grow rapidly. Tabular Q-learning and SARSA may become inefficient as the number of targets or environmental variables increases.
-
-**Evaluation uncertainty**
-
-The reported experiments use particular random seeds and configurations. More independent training runs, confidence intervals, and statistical comparisons are needed to assess the robustness of the results.
-
-**Potential reward and policy mismatch**
-
-The greedy baseline explicitly maximizes minimum spectral distance, while the reinforcement learning agents optimize a reward that also includes observation failures and costs. The different objectives help explain why the policies may perform differently on reward and diversity metrics.
-
-## Future Improvements
-
-The next stages of ORBITAL could address these limitations in several ways.
-
-1. **Real geographic targets:** Retain coordinates and metadata for candidate observations so that target selection can incorporate location, accessibility, and spatial coverage.
-
-2. **Realistic environmental data:** Introduce cloud-cover observations, acquisition constraints, and more realistic weather transition models.
-
-3. **Improved reward engineering:** Investigate explicit trade-offs among information gain, spectral diversity, observation success, energy expenditure, and scientific relevance.
-
-4. **Stronger baselines:** Compare against random selection, greedy novelty, farthest-point sampling, and other established optimization strategies under matched objectives and evaluation conditions.
-
-5. **Robust evaluation:** Run multiple independent training seeds, use held-out samples, report confidence intervals, and test sensitivity to cloud risk, observation budgets, and reward weights.
-
-6. **Scalable reinforcement learning:** Explore Double Q-learning, function approximation, or other methods that can handle larger target sets and richer state representations.
-
-7. **Uncertainty-aware target selection:** Estimate uncertainty in spectral features and target value to distinguish genuinely informative observations from noisy or ambiguous ones.
-
-8. **Scientific validation:** Evaluate whether the selected observations improve a downstream task, such as land-cover classification, change detection, or identification of unusual spectral patterns.
-
-9. **Reproducible research packaging:** Publish experiment configurations, trained model artifacts, dependency versions, and a clear notebook workflow for reproducing the results.
-
-## Technology Stack
-
-* Python
-* NumPy and pandas
-* Matplotlib
-* scikit-learn
-* Hugging Face `datasets`
-* Sentinel-2 multispectral imagery
-* Principal Component Analysis
-* MiniBatch K-Means
-* Tabular Q-learning and SARSA
-
-## Reproducibility
-
-The research is organized as a notebook-based workflow, from dataset loading and feature extraction through clustering, environment construction, agent training, evaluation, and visualization.
-
-To reproduce the experiments, run the notebook cells in order. The notebook uses fixed random seeds in its principal sampling, clustering, and training configurations, although results can still depend on software versions and execution details.
-
-The trained agents and preprocessing artifacts can be saved for subsequent evaluation. When sharing serialized models, use compatible dependency versions and include the experiment metadata required to interpret the artifacts.
-
-## Conclusion
-
-ORBITAL explores the intersection of multispectral remote sensing and reinforcement learning through a controlled simulation of limited-budget observation planning.
-
-The experiments show that Q-learning can outperform random selection and achieve slightly higher mean reward than a greedy novelty-based strategy in one simulated environment. At the same time, the spectral-diversity results demonstrate that no single metric captures every aspect of observation quality.
-
-The most important next step is to move beyond synthetic assumptions and evaluate the approach against stronger baselines, realistic acquisition constraints, and downstream scientific objectives.
-
-ORBITAL is an ongoing research prototype, intended as a foundation for further experimentation in intelligent Earth observation rather than a validated operational satellite-planning system.
+Python, NumPy, pandas, Matplotlib, scikit-learn, Hugging Face `datasets`, Sentinel-2 / EuroSAT MSI.
 
 ---
 
 **Author:** Amna Fatima
-
-**Project:** ORBITAL — Reinforcement Learning for Information-Efficient Earth Observation
