@@ -107,7 +107,7 @@ When clouds, weather and energy costs are added, Q-learning edges ahead of greed
 
 Q-learning covers more distinct targets, but greedy picks sets that are *more different from each other*. So "more targets" and "more diverse targets" are not the same thing.
 
-### Q-learning vs SARSA in v2 (2,000 held-out episodes)
+### Q-learning vs SARSA in v2 (2,000 separate evaluation episodes)
 
 | Agent | Mean reward | Reward std | Mean unique targets |
 |---|---|---|---|
